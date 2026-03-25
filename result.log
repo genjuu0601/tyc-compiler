@@ -1,3 +1,28 @@
+===== TEST FAIL =====
+..................F
+=================================== FAILURES ===================================
+___________________________________ test_019 ___________________________________
+
+    def test_019():
+        source = """
+    void main () {
+        return ++--++a;
+        return !++a;
+    }
+    """
+        expected = "success"
+>       assert Parser(source).parse() == expected
+E       AssertionError: assert 'Error on line 3 col 13: --' == 'success'
+E         
+E         - success
+E         + Error on line 3 col 13: --
+
+test_parser.py:285: AssertionError
+=========================== short test summary info ============================
+FAILED test_parser.py::test_019 - AssertionError: assert 'Error on line 3 col...
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+===== TyC.g4 CONTENT =====
 grammar TyC;
 
 @lexer::header {
@@ -98,11 +123,11 @@ whileStmt: WHILE LPAREN expr RPAREN statement;
 forStmt: FOR LPAREN forInit? SEMI forCond? SEMI forUpdate? RPAREN statement;
 forInit: varDecl | forAssign;
 forCond: expr;
-forUpdate: forIncDec | forAssign;
+forUpdate: forAssign | forIncDec;
 // Right-associative assignment expression is reused here.
 forAssign: lvalue ASSIGN assignmentExpr;
 // Update can be either prefix or postfix inc/dec.
-forIncDec: prefixIncDec | postfixBase (INC | DEC)+;
+forIncDec: prefixIncDec | lvalue (INC | DEC);
 
 // Switch allows:
 // - zero or more case groups
@@ -131,8 +156,7 @@ additiveExpr: multiplicativeExpr ((ADD | SUB) multiplicativeExpr)*;
 multiplicativeExpr: unaryExpr ((MUL | DIV | MOD) unaryExpr)*;
 
 // Prefix operators:
-// - ++/-- can chain right-associatively (e.g., ++--++a)
-// - terminal operand can be an lvalue with optional postfix ++/--
+// - ++/-- restricted to lvalue only
 // - !, +, - can apply to any unaryExpr
 unaryExpr
     : prefixIncDec
@@ -140,26 +164,16 @@ unaryExpr
     | postfixExpr
     ;
 
-// Allow chained prefix inc/dec:
-// - nested forms: ++--++a
-// - operand can be any postfix expression, including parenthesized expr: ++(+a)
-// Keep ++!a invalid by not accepting generic unaryExpr as direct operand.
-prefixIncDec
-    : (INC | DEC) (prefixIncDec | postfixExpr)
-    ;
+prefixIncDec: (INC | DEC) lvalue;
 
 // Postfix layer:
-// - base expression with optional postfix ++/--
+// - lvalue with optional postfix ++/--
 // - plain function call by identifier only (ID(...))
 // - other primaries with chained member access
 // Note: method-style calls like p.x() are intentionally disallowed.
 postfixExpr
-    : postfixBase (INC | DEC)*
-    ;
-
-postfixBase
-    : ID callSuffix (DOT ID)*
-    | ID (DOT ID)*
+    : lvalue (INC | DEC)?
+    | ID callSuffix (DOT ID)*
     | primaryExprNoId (DOT ID)*
     ;
 
@@ -291,6 +305,250 @@ UNCLOSE_STRING
 
 // Catch-all invalid character.
 ERROR_TOKEN: .;
+
+// Fragments
+fragment DIGIT: [0-9];
+fragment LETTER: [a-zA-Z_];
+fragment EXP: [eE] [+-]? DIGIT+;
+fragment ESC_SEQ: '\\' [btnfr"\\];
+
+===== TEST FAIL =====
+...................F
+=================================== FAILURES ===================================
+___________________________________ test_020 ___________________________________
+
+    def test_020():
+        source = """
+    void main () {
+        return ++!a;
+    }
+    """
+        expected = "Error on line 3 col 13: !"
+>       assert Parser(source).parse() == expected
+E       AssertionError: assert 'success' == 'Error on line 3 col 13: !'
+E         
+E         - Error on line 3 col 13: !
+E         + success
+
+test_parser.py:294: AssertionError
+=========================== short test summary info ============================
+FAILED test_parser.py::test_020 - AssertionError: assert 'success' == 'Error ...
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+===== TyC.g4 CONTENT =====
+grammar TyC;
+
+@lexer::header {
+from lexererr import *
+}
+
+@lexer::members {
+def emit(self):
+    tk = self.type
+    if tk == self.UNCLOSE_STRING:       
+        result = super().emit();
+        raise UncloseString(result.text);
+    elif tk == self.ILLEGAL_ESCAPE:
+        result = super().emit();
+        raise IllegalEscape(result.text);
+    elif tk == self.ERROR_CHAR:
+        result = super().emit();
+        raise ErrorToken(result.text); 
+    else:
+        return super().emit();
+}
+
+options{
+	language=Python3;
+}
+
+// =========================
+// Parser Rules
+// =========================
+
+program: (structDecl | funcDecl)* EOF;
+
+structDecl: STRUCT ID LBRACE structMember* RBRACE SEMI;
+structMember: typeSpecNoVoid ID SEMI;
+
+funcDecl
+    : returnType ID LPAREN paramList? RPAREN block
+    | ID LPAREN paramList? RPAREN block
+    ;
+
+returnType: typeSpec;
+typeSpec: primitiveType | ID;
+primitiveType: INT | FLOAT | STRING | VOID;
+typeSpecNoVoid: primitiveNoVoid | ID;
+primitiveNoVoid: INT | FLOAT | STRING;
+
+paramList: param (COMMA param)*;
+param: typeSpecNoVoid ID;
+
+block: LBRACE statementList RBRACE;
+statementList: statement*;
+
+statement
+    : varDeclStmt
+    | block
+    | ifStmt
+    | whileStmt
+    | forStmt
+    | switchStmt
+    | breakStmt
+    | continueStmt
+    | returnStmt
+    | exprStmt
+    ;
+
+varDeclStmt: varDecl SEMI;
+varDecl
+    : AUTO ID (ASSIGN expr)?
+    | typeSpecNoVoid ID (ASSIGN expr)?
+    ;
+
+ifStmt: IF LPAREN expr RPAREN statement (ELSE statement)?;
+whileStmt: WHILE LPAREN expr RPAREN statement;
+
+forStmt: FOR LPAREN forInit? SEMI forCond? SEMI forUpdate? RPAREN statement;
+forInit: varDecl | expr;
+forCond: expr;
+forUpdate: expr;
+
+switchStmt: SWITCH LPAREN expr RPAREN LBRACE switchSection* defaultSection? switchSection* RBRACE;
+switchSection: caseLabel+ statementList;
+caseLabel: CASE expr COLON;
+defaultSection: DEFAULT COLON statementList;
+
+breakStmt: BREAK SEMI;
+continueStmt: CONTINUE SEMI;
+returnStmt: RETURN expr? SEMI;
+exprStmt: expr SEMI;
+
+expr: assignmentExpr;
+assignmentExpr: logicalOrExpr (ASSIGN assignmentExpr)?;
+logicalOrExpr: logicalAndExpr (OR logicalAndExpr)*;
+logicalAndExpr: equalityExpr (AND equalityExpr)*;
+equalityExpr: relationalExpr ((EQ | NEQ) relationalExpr)*;
+relationalExpr: additiveExpr ((LT | LE | GT | GE) additiveExpr)*;
+additiveExpr: multiplicativeExpr ((ADD | SUB) multiplicativeExpr)*;
+multiplicativeExpr: unaryExpr ((MUL | DIV | MOD) unaryExpr)*;
+
+unaryExpr
+    : (NOT | ADD | SUB | INC | DEC) unaryExpr
+    | postfixExpr
+    ;
+
+postfixExpr
+    : ID callSuffix? (DOT ID callSuffix?)* (INC | DEC)?
+    | primaryExprNoId (DOT ID callSuffix?)* (INC | DEC)?
+    ;
+
+primaryExprNoId
+    : literal
+    | LPAREN expr RPAREN
+    | structLiteral
+    ;
+
+callSuffix: LPAREN argList? RPAREN;
+argList: expr (COMMA expr)*;
+
+structLiteral: LBRACE exprList? RBRACE;
+exprList: expr (COMMA expr)*;
+
+literal: INT_LIT | FLOAT_LIT | STRING_LIT;
+
+// =========================
+// Lexer Rules
+// =========================
+
+// Keywords
+AUTO: 'auto';
+BREAK: 'break';
+CASE: 'case';
+CONTINUE: 'continue';
+DEFAULT: 'default';
+ELSE: 'else';
+FLOAT: 'float';
+FOR: 'for';
+IF: 'if';
+INT: 'int';
+RETURN: 'return';
+STRING: 'string';
+STRUCT: 'struct';
+SWITCH: 'switch';
+VOID: 'void';
+WHILE: 'while';
+
+// Operators
+INC: '++';
+DEC: '--';
+EQ: '==';
+NEQ: '!=';
+LE: '<=';
+GE: '>=';
+OR: '||';
+AND: '&&';
+ADD: '+';
+SUB: '-';
+MUL: '*';
+DIV: '/';
+MOD: '%';
+LT: '<';
+GT: '>';
+NOT: '!';
+ASSIGN: '=';
+DOT: '.';
+
+// Separators
+LPAREN: '(';
+RPAREN: ')';
+LBRACE: '{';
+RBRACE: '}';
+SEMI: ';';
+COMMA: ',';
+COLON: ':';
+
+// Literals
+FLOAT_LIT
+    : DIGIT+ '.' DIGIT* EXP?
+    | '.' DIGIT+ EXP?
+    | DIGIT+ EXP
+    ;
+
+INT_LIT: DIGIT+;
+
+STRING_LIT
+    : '"' (ESC_SEQ | ~["\\\r\n])* '"' { self.text = self.text[1:-1] }
+    ;
+
+ID: LETTER (LETTER | DIGIT)*;
+
+// Comments and whitespace
+LINE_COMMENT: '//' ~[\r\n]* -> skip;
+BLOCK_COMMENT: '/*' .*? '*/' -> skip;
+WS: [ \t\r\n\f]+ -> skip;
+
+// Error handling for strings
+ILLEGAL_ESCAPE
+    : '"' (ESC_SEQ | ~["\\\r\n])* '\\' ~[btnfr"\\\r\n]
+      { self.text = self.text[1:] }
+    ;
+
+UNCLOSE_STRING
+    : '"' (ESC_SEQ | ~["\\\r\n])* ( '\\' ('\r'? '\n' | EOF) | '\r'? '\n' | EOF )
+      {
+        text = self.text[1:]
+        if text.endswith('\r\n'):
+            self.text = text[:-2]
+        elif text.endswith('\n') or text.endswith('\r'):
+            self.text = text[:-1]
+        else:
+            self.text = text
+      }
+    ;
+
+ERROR_CHAR: .;
 
 // Fragments
 fragment DIGIT: [0-9];
