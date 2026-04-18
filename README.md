@@ -150,7 +150,7 @@ The `StaticChecker` class must:
 2. **UndeclaredIdentifier** - Use of variables or parameters that have not been declared
 3. **UndeclaredFunction** - Use of functions that have not been declared
 4. **UndeclaredStruct** - Use of struct types that have not been declared
-5. **TypeCannotBeInferred** - Variables declared with `auto` whose type cannot be determined
+5. **TypeCannotBeInferred** - single AST argument ``ctx`` (e.g. full **`AssignExpr`** for `x = y`; other nodes when failure is not on an assignment — see semantic constraints doc)
 6. **TypeMismatchInStatement** - Type incompatibilities in statements (if, while, for, return, assignment)
 7. **TypeMismatchInExpression** - Type incompatibilities in expressions (operators, function calls, member access)
 8. **MustInLoop** - Break/continue statements outside of loop contexts

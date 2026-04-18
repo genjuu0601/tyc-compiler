@@ -10,32 +10,32 @@ This document provides a comprehensive reference for all semantic constraints an
 
 The TyC static semantic checker must detect and report the following error types:
 
-1. **Redeclared** - Variables, functions, structs, or parameters declared multiple times
+1. **Redeclared** - Variables, functions, structs, parameters, or struct members declared multiple times (or a local variable reusing a parameter name in the same function)
 2. **UndeclaredIdentifier** - Use of variables or parameters that have not been declared
 3. **UndeclaredFunction** - Use of functions that have not been declared
 4. **UndeclaredStruct** - Use of struct types that have not been declared
-5. **TypeCannotBeInferred** - Variables declared with `auto` whose type cannot be determined
+5. **TypeCannotBeInferred** - `auto` without a fixable type; message is `TypeCannotBeInferred(<ctx>)` where `<ctx>` is one AST node (`str` per `src/utils/nodes.py`)
 6. **TypeMismatchInStatement** - Type incompatibilities in statements (if, while, for, return, assignment)
-7. **TypeMismatchInExpression** - Type incompatibilities in expressions (operators, function calls, member access)
+7. **TypeMismatchInExpression** - Type incompatibilities in expressions (operators, function calls, member access, struct literals against an expected struct type)
 8. **MustInLoop** - Break/continue statements outside of loop contexts
 
 ---
 
 ## Detailed Error Specifications
 
-### 1. Redeclared Variable/Function/Struct/Parameter
+### 1. Redeclared Variable/Function/Struct/Parameter/Member
 
 **Rule:** All declarations must be unique within their respective scopes as defined in the TyC specification.
 
 **Exception:** `Redeclared(<kind>, <identifier>)`
-- `<kind>`: Type of redeclared entity (`Variable`, `Function`, `Struct`, `Parameter`)
+- `<kind>`: Type of redeclared entity (`Variable`, `Function`, `Struct`, `Parameter`, `Member`)
 - `<identifier>`: Name of the redeclared identifier
 
 **Scope-specific Rules:**
-- **Global scope:** Functions and structs must have unique names
-- **Function scope:** Parameters must have unique names within the same function
-- **Local scope (block):** Variables must have unique names within the same block
-- **Shadowing:** Variables in nested blocks can shadow variables in outer scopes
+- **Global scope:** Struct names must be unique among all struct declarations, and function names must be unique among all function declarations (no overloading). **Struct type names and function names use separate namespaces:** the same identifier may name both a struct type and a function (e.g. `struct foo { ... };` and `int foo(int x, int y) { ... }` are valid). Context disambiguates—type position in declarations vs. `(` in a call.
+- **Function scope:** Parameters belong to the function's scope and are visible throughout the entire function body. Parameter names must be unique within the same parameter list. **You must not declare a local variable with the same name as a parameter anywhere in that function's body**, including inside nested `{ }` blocks; that is reported as `Redeclared(Variable, <name>)` (not shadowing). TyC does not allow inner blocks to shadow an enclosing function's parameters.
+- **Local scope (block):** Variables must have unique names within the same block.
+- **Shadowing:** Variables in nested blocks may shadow **other local variables** from outer blocks in the same function, subject to the rule above (parameters cannot be shadowed).
 
 **Examples:**
 ```tyc
@@ -56,6 +56,15 @@ int add(int a, int b) {  // Redeclared(Function, add) - no function overloading
     return a + b;
 }
 
+// Valid: same identifier for a struct type and a function (separate global namespaces)
+struct foo {
+    int x;
+    int y;
+};
+int foo(int x, int y) {  // Not Redeclared: struct foo and function foo are distinct
+    return x + y;
+}
+
 // Error: Redeclared Variable in same block
 void main() {
     int count = 10;
@@ -66,6 +75,17 @@ void main() {
 int calculate(int x, float y, int x) {  // Redeclared(Parameter, x)
     return x + y;
 }
+
+// Error: Local variable reuses parameter name (same function; not allowed even in nested blocks)
+void func(int x) {
+    int x = 10;  // Redeclared(Variable, x)
+}
+
+// Error: Duplicate struct member names in the same struct
+struct Point {
+    int x;
+    int x;  // Redeclared(Member, x)
+};
 
 // Valid: Shadowing in different scopes
 void example() {
@@ -98,6 +118,7 @@ void test() {
 **Identifier Resolution Rules:**
 - Identifiers are resolved by searching from innermost scope outward
 - Variables must be declared before use within the same or enclosing scope
+- A variable's initializer is checked without that variable in scope (see **`tyc_specification.md` § Scope Rules**)
 - Parameters are visible throughout the entire function body
 - Global variables are not supported in TyC (only function/struct declarations are global)
 
@@ -153,7 +174,7 @@ void nested() {
 **Function Declaration Rules:**
 - Functions have global scope
 - Functions can be called from anywhere after declaration
-- Function names must be unique (no function overloading)
+- Function names must be unique among functions (no function overloading); a function name may match a struct type name
 - Built-in functions (`readInt`, `readFloat`, `readString`, `printInt`, `printFloat`, `printString`) are implicitly declared
 
 **Examples:**
@@ -199,8 +220,9 @@ void example() {
 **Struct Declaration Rules:**
 - Structs have global scope
 - Struct types can be used throughout the program after declaration
-- Struct names must be unique
+- Struct names must be unique among struct types (may match a function name—separate namespace)
 - Struct members cannot use `auto` - only explicit types are allowed
+- A member's type cannot be the struct currently being declared (see **`tyc_specification.md` § Struct Type**)
 
 **Examples:**
 ```tyc
@@ -259,40 +281,70 @@ struct Address {
 
 ### 5. Type Cannot Be Inferred
 
-**Rule:** Variables declared with `auto` must have their types determinable from their usage.
+**Rule:** Every `auto` binding must obtain a definite type from initialization or from later use.
 
-**Exception:** `TypeCannotBeInferred(<variable>)`
+**Exception:** `TypeCannotBeInferred(<ctx>)` — `<ctx>` is the AST node the checker attaches to the first unresolved case (`__str__` format in `src/utils/nodes.py`). In practice it is the expression or statement under check (e.g. a binary op, an assignment, a block after locals, a `return`), not a bare variable name.
 
-**Type Inference Rules:**
-- **`auto` with initialization:** Type is inferred from the initialization expression
-- **`auto` without initialization:** Type must be inferred from the first usage (assignment, expression, function argument, etc.)
-- If a variable with `auto` is used in a context where its type cannot be determined, this error occurs
+**Inference:** With init → from the initializer; without init → from first use that fixes the type. Otherwise this error.
 
-**Examples:**
+**Reporting:** One semantic error per run. Among `TypeCannotBeInferred` failures, the first one hit during the semantic visit is reported. Program-wide ordering (first failure along the visit, not a global sort by error tier) is defined under **Error Detection Priority** in Implementation Guidelines. Snippets below are separate illustrations, not one pasteable program.
+
 ```tyc
-// Error: Both auto variables unknown - cannot infer from binary operation
+// Error: neither auto has a known type — cannot use x + y
 void example() {
     auto x;
     auto y;
-    auto result = x + y;  // Error: TypeCannotBeInferred(x) and TypeCannotBeInferred(y)
-    // Neither x nor y has a known type, so the + operator cannot determine types
+    auto result = x + y;  // TypeCannotBeInferred(BinaryOp(Identifier(x), +, Identifier(y)))
 }
 
-// Error: Both auto variables unknown - cannot infer from assignment
+// Error: both sides unknown — assignment cannot pick a type
 void test() {
     auto x;
     auto y;
-    x = y;  // Error: TypeCannotBeInferred(x) and TypeCannotBeInferred(y)
-    // Neither variable has a known type to infer from
+    x = y;  // TypeCannotBeInferred(AssignExpr(Identifier(x) = Identifier(y)))
 }
 
-// Error: Circular dependency in type inference
+// Error: mutual dependency — no literal, parameter, or already-typed operand to anchor inference
 void circular() {
     auto a;
     auto b;
-    a = b;  // Error: TypeCannotBeInferred(a) and TypeCannotBeInferred(b)
-    b = a;  // Both depend on each other, neither has a base type
+    a = b;  // TypeCannotBeInferred(AssignExpr(Identifier(a) = Identifier(b)))
+    // (A following `b = a` would be the same class of problem; it is not reported in the same run after the error above.)
 }
+
+// Error: both autos unknown — an `int` receiver does not disambiguate operand typings here:
+// relational operators yield `int` for any valid numeric operand pair, so the outer type adds little (Rule 2.2.1).
+void compare_autos() {
+    auto x;
+    auto y;
+    int result = x < y;  // TypeCannotBeInferred(BinaryOp(Identifier(x), <, Identifier(y)))
+}
+
+// Error: declared type of `c` checks the initializer as a whole; it does not infer `a` / `b` inside `a * b` (Rule 2.2.1).
+void mixed_decl() {
+    auto a;
+    auto b;
+    int c = a * b;  // TypeCannotBeInferred(BinaryOp(Identifier(a), *, Identifier(b)))
+}
+
+// Error: `auto x` is still unknown when typing `x + "hello"` (same message if only `x` is declared)
+void string_mix() {
+    auto x;
+    auto y;  // unused here; failure is reported on the next line’s initializer
+    auto result = x + "hello";  // TypeCannotBeInferred(BinaryOp(Identifier(x), +, StringLiteral('hello')))
+}
+
+// Error: auto never used — reported when finishing the block (not at the `VarDecl` line alone)
+void unused_auto() {
+    auto x;
+}  // TypeCannotBeInferred(BlockStmt([VarDecl(auto, x)]))
+
+// Error: return uses an auto that still has no type (inferred-return function; needs `void main()` in full program)
+func() {
+    auto x;
+    return x;  // TypeCannotBeInferred(ReturnStmt(return Identifier(x)))
+}
+void main() {}
 
 // Valid: auto with initialization
 void valid1() {
@@ -305,7 +357,7 @@ void valid1() {
 void valid2() {
     auto a;
     a = 10;        // Valid: type inferred as int from assignment (first usage)
-    
+
     auto b;
     b = 3.14;      // Valid: type inferred as float from assignment (first usage)
 }
@@ -314,28 +366,27 @@ void valid2() {
 void valid3() {
     auto x;
     x = readInt();  // Valid: type inferred as int from function return type (first usage)
-    
+
     auto y;
     int temp = 10;
     y = temp + 5;   // Valid: type inferred as int from expression (first usage)
 }
 
-// Valid: auto variable inferred from expression with known literal
+// Valid: one unknown auto + integer literal — deterministic tie-break (see spec Rule 2.2.1)
 void valid4() {
     auto value;
-    auto result = value + 5;  // Valid: value inferred as int from + operator with int literal 5
-    // The + operator requires int or float operands, and literal 5 is int,
-    // so the type inference system infers value as int to match the int literal
+    auto result = value + 5;  // Valid: value fixed as int (not the only typing compatible with `+`,
+                              // but TyC pins an unknown numeric `auto` to int when the other operand is an integer literal)
 }
 
-// Valid: auto with initialization from expression
+// Valid: auto with initialization from expression (operands already typed)
 void valid5() {
     int a = 10;
     float b = 3.14;
     auto sum = a + b;  // Valid: type inferred as float from expression
 }
 
-// Valid: auto variable inferred from function parameter type
+// Valid: whole argument is one `auto` identifier — parameter type fixes `x` (contrast `f(x + y)` with two unknowns)
 void valid6() {
     auto x;
     printInt(x);  // Valid: type inferred as int from printInt(int) parameter type
@@ -357,9 +408,10 @@ void valid6() {
 - `<init>`, `<condition>`, `<update>` follow their respective type rules
 - Condition must evaluate to `int` type
 
-**Assignment Statements:**
+**Assignment Statements (`ExprStmt` with `AssignExpr`):**
 - Left-hand side and right-hand side must have the same type
 - Struct assignment: both sides must be the same struct type
+- A struct literal on the right-hand side that fails arity or per-member checks against the expected struct type is **`TypeMismatchInExpression`** on that literal, not **`TypeMismatchInStatement`** for that failure alone (see **Struct literal**)
 - No type coercion in assignments (unlike some languages)
 
 **Assignment Expression Behavior:**
@@ -531,6 +583,10 @@ void assignmentExpressionValid() {
 - Number of arguments must match number of parameters
 - Argument types must match parameter types (no type coercion)
 - Result type: return type of the function
+
+**Struct literal:**
+- When a context supplies an expected struct type, the literal must have the same number of fields as the struct, and each field expression’s type must equal the corresponding member’s type (no coercion between distinct primitive types)
+- **Exception:** `TypeMismatchInExpression(<StructLiteral>)` — `<StructLiteral>` is the full struct literal node
 
 **Assignment Expression:**
 - Left-hand side must be an identifier or a member access expression (cannot be a literal or other expression)
@@ -783,34 +839,42 @@ void nestedLoops() {
 
 ### Error Detection Priority
 
-When multiple errors are present, report them in the following order:
+**Single-pass, first failure wins (program-wide).** The checker performs one semantic **visit** over the program (typical depth-first walk). The **only** error reported is the **first** semantic failure encountered along that visit. The implementation may still use extra internal passes or deferred checks (e.g. for inferred return types) as long as **reporting** stays “first failure along the chosen visit order.” **Tier numbers do not promote a later failure ahead of an earlier one:** the visit is not extended to discover all failures and then choose by smallest tier. The tiers below classify error **kinds** and define **tie-breaking within the same tier**; they do not impose a global priority queue over the whole program.
+
+**Error tiers** (for documentation and same-tier ties):
 
 1. **Declaration errors** (Redeclared, UndeclaredIdentifier, UndeclaredFunction, UndeclaredStruct)
-2. **Type inference errors** (TypeCannotBeInferred)
+2. **Type inference errors** (`TypeCannotBeInferred`; see section 5)
 3. **Type errors** (TypeMismatchInStatement, TypeMismatchInExpression)
 4. **Control flow errors** (MustInLoop)
 
+**Within one tier:** if more than one failure in that tier would arise before the checker stops, report the **first** in visit order (order depends on how constructs are checked, not on source left-to-right alone).
+
+**One** error per run.
+
 ### Scope Management
 
-- **Global scope:** Functions and structs
-- **Function scope:** Parameters (visible throughout function body)
+Lexical scope (blocks, shadowing, and `for` init vs. loop body) is defined normatively in **`tyc_specification.md` § Scope Rules**. The checker should follow that model; the Redeclared / UndeclaredIdentifier rules in this document are consequences of it.
+
+- **Global scope:** Functions and structs (names are unique within each kind; struct names and function names may coincide—see Redeclared rules above). Global binding does not override **declared-before-use** for calls and struct-type uses (sections 3–4); align with **`tyc_specification.md` § Scope Rules, Global Scope**.
+- **Function scope:** Parameters (visible throughout function body; see Redeclared rules—locals may not reuse parameter names)
 - **Local scope (block):** Variables declared in blocks `{}`
-- **Nested scopes:** Inner scopes can shadow outer scopes
+- **Nested scopes:** Inner scopes can shadow outer local variables (not parameters of the enclosing function)
 
 ### Type Inference System
 
 TyC uses complete type inference with the following rules:
 
-1. **Literal types:** Integer → `int`, Float → `float`, String → `string`
-2. **`auto` with initialization:** Type inferred from initialization expression
-3. **`auto` without initialization:** Type inferred from first usage (assignment, expression, function argument)
-4. **Expression types:** Determined by operator rules and operand types
-5. **Function return types:** Can be explicit or inferred from return statements
+1. **Literals:** int / float / string as usual
+2. **`auto`:** From initializer if present; else from first constraining use
+3. **Failure:** Ambiguous or unused `auto` → `TypeCannotBeInferred(<ctx>)` (see section 5)
+4. **Expressions:** Operator/operand rules apply once types are known
+5. **Function returns:** Explicit or inferred from the function's return statements as a whole (specification Rule 5), not necessarily from a single strict top-to-bottom pass
 
 ### Type System Rules
 
 - **Strict typing:** No implicit type coercion except in arithmetic operations (int + float → float)
-- **No function overloading:** Function names must be unique
+- **No function overloading:** Function names must be unique among functions (struct and function names may coincide)
 - **Struct types:** Must be explicitly declared before use
 - **Void type:** Only used as function return type, not for variables or parameters
 
@@ -831,4 +895,4 @@ A TyC program must have at least one function named `main` that takes no paramet
 ---
 
 *Document prepared for TyC Static Semantic Analysis*  
-*Last updated: January 2026*
+*Last updated: April 2026*

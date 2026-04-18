@@ -69,7 +69,6 @@ class ASTVisitor(ABC):
     def visit_var_decl(self, node: "VarDecl", o: Any = None):
         pass
 
-
     @abstractmethod
     def visit_if_stmt(self, node: "IfStmt", o: Any = None):
         pass

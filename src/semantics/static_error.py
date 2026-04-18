@@ -16,8 +16,8 @@ class Redeclared(StaticError):
     Raised when an identifier is declared more than once in the same scope.
     
     Args:
-        kind (str): The kind of redeclared entity 
-                   ('Variable', 'Function', 'Struct', 'Parameter')
+        kind (str): The kind of redeclared entity
+                   ('Variable', 'Function', 'Struct', 'Parameter', 'Member')
         name (str): The name of the redeclared identifier
     """
     def __init__(self, kind, name):
@@ -64,16 +64,14 @@ class UndeclaredStruct(StaticError):
 
 class TypeCannotBeInferred(StaticError):
     """
-    Raised when a variable declared with `auto` cannot have its type inferred
-    from the context.
-    
+    Raised when a variable declared with `auto` cannot have its type inferred.
+
     Args:
-        variable: The variable node or variable name that cannot have its type inferred
+        ctx: A single AST node that identifies the failure site.
     """
-    def __init__(self, variable):
-        self.variable = variable
-        var_name = variable.name if hasattr(variable, 'name') else str(variable)
-        super().__init__(f"TypeCannotBeInferred({var_name})")
+    def __init__(self, ctx):
+        self.ctx = ctx
+        super().__init__(f"TypeCannotBeInferred({ctx})")
 
 
 class TypeMismatchInStatement(StaticError):
