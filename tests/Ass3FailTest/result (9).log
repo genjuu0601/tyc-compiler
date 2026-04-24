@@ -1,0 +1,20 @@
+..............................................................................................................................................F
+=================================== FAILURES ===================================
+___________________________________ test_145 ___________________________________
+
+    def test_145():
+        source = """
+    void main(){
+        switch(1 || 2){case 1.0: }
+    }
+    """
+>       assert Checker(source).check_from_source() == "TypeMismatchInStatement(SwitchStmt(switch BinaryOp(IntLiteral(1), ||, IntLiteral(2)) cases [CaseStmt(case FloatLiteral(1.0): [])]))"
+E       AssertionError: assert 'TypeMismatch...Literal(1.0))' == 'TypeMismatch...(1.0): [])]))'
+E         
+E         - TypeMismatchInStatement(SwitchStmt(switch BinaryOp(IntLiteral(1), ||, IntLiteral(2)) cases [CaseStmt(case FloatLiteral(1.0): [])]))
+E         + TypeMismatchInExpression(FloatLiteral(1.0))
+
+test_checker.py:1586: AssertionError
+=========================== short test summary info ============================
+FAILED test_checker.py::test_145 - AssertionError: assert 'TypeMismatch...Lit...
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!

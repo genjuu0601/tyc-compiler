@@ -1,0 +1,21 @@
+..................................................................F
+=================================== FAILURES ===================================
+___________________________________ test_069 ___________________________________
+
+    def test_069():
+        source = """
+    void main() {
+        int a; int b;
+        if (1) int a = b;
+    }
+    """
+>       assert Checker(source).check_from_source() == "Static checking passed"
+E       AssertionError: assert 'Redeclared(Variable, a)' == 'Static checking passed'
+E         
+E         - Static checking passed
+E         + Redeclared(Variable, a)
+
+test_checker.py:793: AssertionError
+=========================== short test summary info ============================
+FAILED test_checker.py::test_069 - AssertionError: assert 'Redeclared(Variabl...
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!

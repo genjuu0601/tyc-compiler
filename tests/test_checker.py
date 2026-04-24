@@ -16,6 +16,7 @@ from src.utils.nodes import (
     CaseStmt,
     ContinueStmt,
     DefaultStmt,
+    ExprStmt,
     FloatLiteral,
     ForStmt,
     FuncCall,
@@ -62,15 +63,7 @@ VALID_CASES = [
         "Static checking passed",
     ),
     (
-        "int add(int x, int y) { return x + y; } void main() { int sum = add(5, 3); }",
-        "Static checking passed",
-    ),
-    (
         "struct Point { int x; int y; }; void main() { Point p; p.x = 10; p.y = 20; }",
-        "Static checking passed",
-    ),
-    (
-        "void main() { int x = 10; { int y = 20; int z = x + y; } }",
         "Static checking passed",
     ),
     (
@@ -93,6 +86,14 @@ VALID_CASES = [
         "struct Point { int x; int y; }; void take(Point p) { printInt(p.x); } void main() { take({1, 2}); }",
         "Static checking passed",
     ),
+    (
+        "struct foo { int x; }; int foo(int y) { return y; } void main() { foo(1); foo p; p.x = 2; }",
+        "Static checking passed",
+    ),
+    (
+        "void main() { for (auto i = 0; i < 3; i = i + 1) { int i = 10; } printInt(i); }",
+        "Static checking passed",
+    ),
 ]
 
 
@@ -108,6 +109,10 @@ REDECLARED_CASES = [
         "Redeclared(Struct, Point)",
     ),
     (
+        "struct Point { int x; int x; }; void main() {}",
+        "Redeclared(Member, x)",
+    ),
+    (
         "void main() { int x = 1; { int y = 2; int y = 3; } }",
         "Redeclared(Variable, y)",
     ),
@@ -116,12 +121,8 @@ REDECLARED_CASES = [
         "int foo(int x) { return x; } float foo(float x) { return x; } void main() {}",
         "Redeclared(Function, foo)",
     ),
-    (
-        "int foo(int x) { return x; } foo(float x) { return x; } void main() {}",
-        "Redeclared(Function, foo)",
-    ),
-    ("struct Data { int x; }; void Data() {} void main() {}", "Redeclared(Function, Data)"),
-    ("void Point() {} struct Point { int x; }; void main() {}", "Redeclared(Struct, Point)"),
+    ("void f(int x) { { int x = 1; } } void main() {}", "Redeclared(Variable, x)"),
+    ("void main() { int a = 1; { int a = 2; } int b = 3; int b = 4; }", "Redeclared(Variable, b)"),
 ]
 
 
@@ -186,16 +187,46 @@ UNDECLARED_STRUCT_CASES = [
 
 
 TYPE_CANNOT_BE_INFERRED_CASES = [
-    ("void main() { auto x; auto y; x = y; }", "TypeCannotBeInferred(x)"),
-    ("void main() { auto x; auto y; y = x; }", "TypeCannotBeInferred(y)"),
-    ("void main() { auto x; auto y; auto z = x + y; }", "TypeCannotBeInferred(x)"),
-    ("void main() { auto x; auto y; auto z = x == y; }", "TypeCannotBeInferred(x)"),
-    ("void main() { auto x; auto y; auto z = x * y; }", "TypeCannotBeInferred(x)"),
-    ("void main() { auto p = {1, 2}; }", "TypeCannotBeInferred(p)"),
-    ("void main() { auto x; auto y; if (x = y) {} }", "TypeCannotBeInferred(x)"),
-    ("void main() { auto x; auto y; printInt(x = y); }", "TypeCannotBeInferred(x)"),
-    ("foo() { auto x; return x; } void main() { foo(); }", "TypeCannotBeInferred(x)"),
-    ("void main() { auto x; auto y; auto z = (x = y) + 1; }", "TypeCannotBeInferred(x)"),
+    (
+        "void main() { auto x; auto y; x = y; }",
+        "TypeCannotBeInferred(AssignExpr(Identifier(x) = Identifier(y)))",
+    ),
+    (
+        "void main() { auto x; auto y; y = x; }",
+        "TypeCannotBeInferred(AssignExpr(Identifier(y) = Identifier(x)))",
+    ),
+    (
+        "void main() { auto x; auto y; auto z = x + y; }",
+        "TypeCannotBeInferred(BinaryOp(Identifier(x), +, Identifier(y)))",
+    ),
+    (
+        "void main() { auto x; auto y; auto z = x == y; }",
+        "TypeCannotBeInferred(BinaryOp(Identifier(x), ==, Identifier(y)))",
+    ),
+    (
+        "void main() { auto x; auto y; auto z = x * y; int w = 1; }",
+        "TypeCannotBeInferred(BinaryOp(Identifier(x), *, Identifier(y)))",
+    ),
+    (
+        "void main() { auto p = {1, 2}; }",
+        "TypeCannotBeInferred(StructLiteral({IntLiteral(1), IntLiteral(2)}))",
+    ),
+    (
+        "void main() { auto x; auto y; if (x = y) {} }",
+        "TypeCannotBeInferred(AssignExpr(Identifier(x) = Identifier(y)))",
+    ),
+    (
+        "void main() { auto x; auto y; printInt(x = y); }",
+        "TypeCannotBeInferred(AssignExpr(Identifier(x) = Identifier(y)))",
+    ),
+    (
+        "foo() { auto x; return x; } void main() { foo(); }",
+        "TypeCannotBeInferred(ReturnStmt(return Identifier(x)))",
+    ),
+    (
+        "void main() { auto x; }",
+        "TypeCannotBeInferred(BlockStmt([VarDecl(auto, x)]))",
+    ),
 ]
 
 
@@ -218,15 +249,15 @@ TYPE_MISMATCH_STATEMENT_CASES = [
     ),
     (
         "void main() { int x = 1; x = \"hi\"; }",
-        stmt_error(AssignExpr(Identifier("x"), StringLiteral("hi"))),
+        stmt_error(ExprStmt(AssignExpr(Identifier("x"), StringLiteral("hi")))),
     ),
     (
         "void main() { float f = 1.0; f = 1; }",
-        stmt_error(AssignExpr(Identifier("f"), IntLiteral(1))),
+        stmt_error(ExprStmt(AssignExpr(Identifier("f"), IntLiteral(1)))),
     ),
     (
         "struct Point { int x; int y; }; struct Person { string name; int age; }; void main() { Point p; Person q; p = q; }",
-        stmt_error(AssignExpr(Identifier("p"), Identifier("q"))),
+        stmt_error(ExprStmt(AssignExpr(Identifier("p"), Identifier("q")))),
     ),
     (
         "int foo() { return \"hi\"; } void main() {}",
@@ -250,11 +281,18 @@ TYPE_MISMATCH_STATEMENT_CASES = [
     ),
     (
         "void main() { for (int i = 0; i < 3; i = 1.5) {} }",
-        stmt_error(AssignExpr(Identifier("i"), FloatLiteral(1.5))),
+        stmt_error(
+            ForStmt(
+                VarDecl(IntType(), "i", IntLiteral(0)),
+                BinaryOp(Identifier("i"), "<", IntLiteral(3)),
+                AssignExpr(Identifier("i"), FloatLiteral(1.5)),
+                BlockStmt([]),
+            )
+        ),
     ),
     (
         "void main() { switch (1) { case 1.5: break; } }",
-        stmt_error(CaseStmt(FloatLiteral(1.5), [BreakStmt()])),
+        stmt_error(SwitchStmt(IntLiteral(1), [CaseStmt(FloatLiteral(1.5), [BreakStmt()])])),
     ),
     (
         "foo() { if (1) return 1; return 1.5; } void main() { foo(); }",
@@ -321,8 +359,8 @@ TYPE_MISMATCH_EXPRESSION_CASES = [
         expr_error(StructLiteral([IntLiteral(1), StringLiteral("a")])),
     ),
     (
-        "struct Point { int x; int y; }; void take(Point p) {} void main() { take({1}); }",
-        expr_error(StructLiteral([IntLiteral(1)])),
+        "int foo() { auto a; auto b; {{{ b && a; }}} b = 2; a = 2.2; } void main() { foo(); }",
+        expr_error(AssignExpr(Identifier("a"), FloatLiteral(2.2))),
     ),
 ]
 

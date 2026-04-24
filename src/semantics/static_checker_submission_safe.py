@@ -71,6 +71,7 @@ class StaticChecker(ASTVisitor):
         self.functions = {}
         self.scopes = []
         self.current_function = None
+        self.current_param_names = set()
         self.loop_depth = 0
         self.switch_depth = 0
 
@@ -87,14 +88,14 @@ class StaticChecker(ASTVisitor):
             self.visit(decl)
 
     def visit_struct_decl(self, node: "StructDecl", o: Any = None):
-        self._ensure_global_name_available(node.name, "Struct")
+        self._ensure_struct_name_available(node.name)
 
         members = []
         member_map = {}
         for member in node.members:
             name, member_type = self.visit(member)
             if name in member_map:
-                raise Redeclared("Variable", name)
+                raise Redeclared("Member", name)
             members.append((name, member_type))
             member_map[name] = member_type
 
@@ -108,7 +109,7 @@ class StaticChecker(ASTVisitor):
         return (node.name, self.visit(node.member_type))
 
     def visit_func_decl(self, node: "FuncDecl", o: Any = None):
-        self._ensure_global_name_available(node.name, "Function")
+        self._ensure_function_name_available(node.name)
 
         return_type = self.visit(node.return_type) if node.return_type else None
         params = []
@@ -138,18 +139,21 @@ class StaticChecker(ASTVisitor):
 
         self.current_function = func_info
         self.scopes = [param_scope]
+        self.current_param_names = set(param_scope.keys())
         self.loop_depth = 0
         self.switch_depth = 0
 
         try:
             for stmt in node.body.statements:
                 self.visit(stmt)
+            self._ensure_no_uninferred_auto_in_scope(node.body, self.scopes[0])
         finally:
             if (not func_info["explicit_return"]) and func_info["return_type"] is None:
                 func_info["return_type"] = self.VOID
 
             self.current_function = prev_function
             self.scopes = prev_scopes
+            self.current_param_names = set()
             self.loop_depth = prev_loop_depth
             self.switch_depth = prev_switch_depth
 
@@ -186,6 +190,7 @@ class StaticChecker(ASTVisitor):
         try:
             for stmt in node.statements:
                 self.visit(stmt)
+            self._ensure_no_uninferred_auto_in_scope(node, self.scopes[-1])
         finally:
             self._pop_scope()
 
@@ -193,10 +198,12 @@ class StaticChecker(ASTVisitor):
         declared_type = self.visit(node.var_type) if node.var_type else None
 
         self._ensure_local_name_available(node.name, "Variable")
+        if node.name in self.current_param_names:
+            raise Redeclared("Variable", node.name)
         symbol = {"name": node.name, "typ": declared_type, "node": node}
-        self.scopes[-1][node.name] = symbol
 
         if node.init_value is None:
+            self.scopes[-1][node.name] = symbol
             return
 
         if declared_type is None:
@@ -208,6 +215,7 @@ class StaticChecker(ASTVisitor):
             if init_type == self.VOID:
                 raise TypeMismatchInStatement(node)
             symbol["typ"] = init_type
+            self.scopes[-1][node.name] = symbol
             return
 
         init_type = self._actual_type(
@@ -225,59 +233,56 @@ class StaticChecker(ASTVisitor):
 
         if init_type == self.VOID or not self._same_type(init_type, declared_type):
             raise TypeMismatchInStatement(node)
+        self.scopes[-1][node.name] = symbol
 
     def visit_if_stmt(self, node: "IfStmt", o: Any = None):
         self._ensure_statement_type(node.condition, self.INT, node)
-        self.visit(node.then_stmt)
+        self._visit_nested_stmt(node.then_stmt)
         if node.else_stmt:
-            self.visit(node.else_stmt)
+            self._visit_nested_stmt(node.else_stmt)
 
     def visit_while_stmt(self, node: "WhileStmt", o: Any = None):
         self._ensure_statement_type(node.condition, self.INT, node)
         self.loop_depth += 1
         try:
-            self.visit(node.body)
+            self._visit_nested_stmt(node.body)
         finally:
             self.loop_depth -= 1
 
     def visit_for_stmt(self, node: "ForStmt", o: Any = None):
-        self._push_scope()
+        if node.init:
+            self._ensure_for_clause_type(node.init, node)
+
+        if node.condition:
+            self._ensure_statement_type(node.condition, self.INT, node)
+
+        if node.update:
+            self._ensure_for_clause_type(node.update, node)
+
+        self.loop_depth += 1
         try:
-            if node.init:
-                self.visit(node.init)
-
-            if node.condition:
-                self._ensure_statement_type(node.condition, self.INT, node)
-
-            if node.update:
-                if isinstance(node.update, AssignExpr):
-                    self.visit(node.update, self._expr_context(assign_mode="stmt"))
-                else:
-                    self.visit(node.update)
-
-            self.loop_depth += 1
-            try:
-                self.visit(node.body)
-            finally:
-                self.loop_depth -= 1
+            self._visit_nested_stmt(node.body)
         finally:
-            self._pop_scope()
+            self.loop_depth -= 1
 
     def visit_switch_stmt(self, node: "SwitchStmt", o: Any = None):
         self._ensure_statement_type(node.expr, self.INT, node)
         self.switch_depth += 1
+        self._push_scope()
         try:
             for case in node.cases:
-                self.visit(case)
+                self.visit(case, node)
             if node.default_case:
                 self.visit(node.default_case)
+            self._ensure_no_uninferred_auto_in_scope(node, self.scopes[-1])
         finally:
+            self._pop_scope()
             self.switch_depth -= 1
 
     def visit_case_stmt(self, node: "CaseStmt", o: Any = None):
         case_type = self._actual_type(self.visit(node.expr, self._expr_context(self.INT)))
         if self._is_pending_struct_literal(case_type) or case_type != self.INT:
-            raise TypeMismatchInStatement(node)
+            raise TypeMismatchInStatement(o if isinstance(o, SwitchStmt) else node)
         for stmt in node.statements:
             self.visit(stmt)
 
@@ -334,7 +339,7 @@ class StaticChecker(ASTVisitor):
 
         if func["return_type"] is None:
             if self._is_unknown(expr_type):
-                raise TypeCannotBeInferred(node.expr)
+                raise TypeCannotBeInferred(node)
             func["return_type"] = expr_type
             return
 
@@ -347,7 +352,7 @@ class StaticChecker(ASTVisitor):
 
     def visit_expr_stmt(self, node: "ExprStmt", o: Any = None):
         if isinstance(node.expr, AssignExpr):
-            self.visit(node.expr, self._expr_context(assign_mode="stmt"))
+            self.visit(node.expr, self._expr_context(assign_mode="stmt", stmt_node=node))
             return
         self.visit(node.expr)
 
@@ -360,21 +365,14 @@ class StaticChecker(ASTVisitor):
         op = node.operator
 
         if op in {"&&", "||"}:
-            left_type = self.visit(node.left, self._expr_context(self.INT))
-            right_type = self.visit(node.right, self._expr_context(self.INT))
+            left_type = self.visit(node.left)
+            right_type = self.visit(node.right)
             return self._finalize_binary_int(node, left_type, right_type)
 
         if op == "%":
-            left_type = self.visit(node.left, self._expr_context(self.INT))
-            right_type = self.visit(node.right, self._expr_context(self.INT))
+            left_type = self.visit(node.left)
+            right_type = self.visit(node.right)
             return self._finalize_binary_int(node, left_type, right_type)
-
-        if op in {"+", "-", "*", "/"} and ctx["expected"] == self.INT:
-            left_type = self.visit(node.left, self._expr_context(self.INT))
-            right_type = self.visit(node.right, self._expr_context(self.INT))
-            return self._finalize_arithmetic(
-                node, left_type, right_type, ctx["expected"]
-            )
 
         left_type, left_error = self._attempt_expr_visit(node.left)
         right_type, right_error = self._attempt_expr_visit(node.right)
@@ -382,7 +380,7 @@ class StaticChecker(ASTVisitor):
         if op in {"+", "-", "*", "/"}:
             if left_error and self._is_numeric_like(right_type):
                 expectation = self._derive_arithmetic_expectation(
-                    self._actual_type(right_type), ctx["expected"]
+                    self._actual_type(right_type)
                 )
                 if expectation is not None:
                     left_type = self.visit(node.left, self._expr_context(expectation))
@@ -390,7 +388,7 @@ class StaticChecker(ASTVisitor):
 
             if right_error and self._is_numeric_like(left_type):
                 expectation = self._derive_arithmetic_expectation(
-                    self._actual_type(left_type), ctx["expected"]
+                    self._actual_type(left_type)
                 )
                 if expectation is not None:
                     right_type = self.visit(node.right, self._expr_context(expectation))
@@ -406,22 +404,15 @@ class StaticChecker(ASTVisitor):
             )
 
         if op in {"==", "!=", "<", "<=", ">", ">="}:
-            if left_error and self._is_numeric_like(right_type):
-                expectation = self._actual_type(right_type)
-                left_type = self.visit(node.left, self._expr_context(expectation))
-                left_error = None
-
-            if right_error and self._is_numeric_like(left_type):
-                expectation = self._actual_type(left_type)
-                right_type = self.visit(node.right, self._expr_context(expectation))
-                right_error = None
-
             if left_error:
                 raise left_error
             if right_error:
                 raise right_error
 
-            return self._finalize_relational(node, left_type, right_type)
+            result = self._finalize_relational(node, left_type, right_type)
+            if ctx["expected"] is not None and result != ctx["expected"]:
+                raise TypeMismatchInExpression(node)
+            return result
 
         raise TypeMismatchInExpression(node)
 
@@ -431,34 +422,31 @@ class StaticChecker(ASTVisitor):
         if node.operator in {"++", "--"}:
             if not self._is_lvalue_expr(node.operand):
                 raise TypeMismatchInExpression(node)
-            operand_type = self._actual_type(
-                self.visit(node.operand, self._expr_context(self.INT))
-            )
+            operand_type = self._actual_type(self.visit(node.operand))
+            if self._is_unknown(operand_type):
+                self._bind_unknown(operand_type, self.INT)
+                operand_type = self.INT
             if operand_type != self.INT:
                 raise TypeMismatchInExpression(node)
             return self.INT
 
         if node.operator == "!":
-            operand_type = self._actual_type(
-                self.visit(node.operand, self._expr_context(self.INT))
-            )
+            operand_type = self._actual_type(self.visit(node.operand))
+            if self._is_unknown(operand_type):
+                self._bind_unknown(operand_type, self.INT)
+                operand_type = self.INT
             if operand_type != self.INT:
                 raise TypeMismatchInExpression(node)
             return self.INT
 
         if node.operator in {"+", "-"}:
-            expectation = (
-                ctx["expected"] if ctx["expected"] in {self.INT, self.FLOAT} else None
-            )
-            operand_type = self._actual_type(
-                self.visit(node.operand, self._expr_context(expectation))
-            )
+            operand_type = self._actual_type(self.visit(node.operand))
 
             if self._is_unknown(operand_type):
                 raise TypeCannotBeInferred(node)
             if not self._is_numeric(operand_type):
                 raise TypeMismatchInExpression(node)
-            if expectation is not None and operand_type != expectation:
+            if ctx["expected"] is not None and operand_type != ctx["expected"]:
                 raise TypeMismatchInExpression(node)
             return operand_type
 
@@ -470,9 +458,10 @@ class StaticChecker(ASTVisitor):
         if not self._is_lvalue_expr(node.operand):
             raise TypeMismatchInExpression(node)
 
-        operand_type = self._actual_type(
-            self.visit(node.operand, self._expr_context(self.INT))
-        )
+        operand_type = self._actual_type(self.visit(node.operand))
+        if self._is_unknown(operand_type):
+            self._bind_unknown(operand_type, self.INT)
+            operand_type = self.INT
         if operand_type != self.INT:
             raise TypeMismatchInExpression(node)
         return self.INT
@@ -485,7 +474,8 @@ class StaticChecker(ASTVisitor):
 
         lhs_type = self._actual_type(self.visit(node.lhs))
         rhs_context = self._expr_context(
-            lhs_type if self._is_concrete_type(lhs_type) else None, "expr"
+            lhs_type if self._is_identifier_or_funccall_or_structliteral(node.rhs) and self._is_concrete_type(lhs_type) else None,
+            "expr",
         )
         rhs_type = self._actual_type(self.visit(node.rhs, rhs_context))
 
@@ -638,6 +628,7 @@ class StaticChecker(ASTVisitor):
         self.functions = {}
         self.scopes = []
         self.current_function = None
+        self.current_param_names = set()
         self.loop_depth = 0
         self.switch_depth = 0
         self._install_builtins()
@@ -706,19 +697,33 @@ class StaticChecker(ASTVisitor):
                 return scope[name]
         return None
 
-    def _ensure_global_name_available(self, name, kind):
-        if name in self.structs or name in self.functions:
-            raise Redeclared(kind, name)
+    def _ensure_function_name_available(self, name):
+        if name in self.functions:
+            raise Redeclared("Function", name)
+
+    def _ensure_struct_name_available(self, name):
+        if name in self.structs:
+            raise Redeclared("Struct", name)
 
     def _ensure_local_name_available(self, name, kind):
         if name in self.scopes[-1]:
             raise Redeclared(kind, name)
 
-    def _expr_context(self, expected=None, assign_mode="expr"):
-        return {"expected": expected, "assign_mode": assign_mode}
+    def _expr_context(self, expected=None, assign_mode="expr", stmt_node=None):
+        return {
+            "expected": expected,
+            "assign_mode": assign_mode,
+            "stmt_node": stmt_node,
+        }
 
     def _normalize_expr_context(self, o):
         if isinstance(o, dict) and "expected" in o and "assign_mode" in o:
+            if "stmt_node" not in o:
+                o = {
+                    "expected": o["expected"],
+                    "assign_mode": o["assign_mode"],
+                    "stmt_node": None,
+                }
             return o
         return self._expr_context()
 
@@ -811,10 +816,6 @@ class StaticChecker(ASTVisitor):
         known_type = self._actual_type(known_type)
         if not self._is_numeric(known_type):
             return None
-        if expected_result == self.INT:
-            return self.INT
-        if expected_result == self.FLOAT:
-            return self.FLOAT
         return known_type
 
     def _finalize_binary_int(self, node, left_type, right_type):
@@ -854,7 +855,7 @@ class StaticChecker(ASTVisitor):
         if self._is_unknown(left_type):
             if not self._is_numeric(right_type):
                 raise TypeMismatchInExpression(node)
-            inferred = self._derive_arithmetic_expectation(right_type, expected_result)
+            inferred = self._derive_arithmetic_expectation(right_type, None)
             if inferred is None:
                 raise TypeCannotBeInferred(node)
             self._bind_unknown(left_type, inferred)
@@ -863,7 +864,7 @@ class StaticChecker(ASTVisitor):
         if self._is_unknown(right_type):
             if not self._is_numeric(left_type):
                 raise TypeMismatchInExpression(node)
-            inferred = self._derive_arithmetic_expectation(left_type, expected_result)
+            inferred = self._derive_arithmetic_expectation(left_type, None)
             if inferred is None:
                 raise TypeCannotBeInferred(node)
             self._bind_unknown(right_type, inferred)
@@ -889,17 +890,8 @@ class StaticChecker(ASTVisitor):
         if self._is_unknown(left_type) and self._is_unknown(right_type):
             raise TypeCannotBeInferred(node)
 
-        if self._is_unknown(left_type):
-            if not self._is_numeric(right_type):
-                raise TypeMismatchInExpression(node)
-            self._bind_unknown(left_type, right_type)
-            left_type = right_type
-
-        if self._is_unknown(right_type):
-            if not self._is_numeric(left_type):
-                raise TypeMismatchInExpression(node)
-            self._bind_unknown(right_type, left_type)
-            right_type = left_type
+        if self._is_unknown(left_type) or self._is_unknown(right_type):
+            raise TypeCannotBeInferred(node)
 
         if not self._is_numeric(left_type) or not self._is_numeric(right_type):
             raise TypeMismatchInExpression(node)
@@ -918,5 +910,65 @@ class StaticChecker(ASTVisitor):
 
     def _raise_assignment_mismatch(self, node, ctx):
         if ctx["assign_mode"] == "stmt":
-            raise TypeMismatchInStatement(node)
+            if self._prefer_assignment_expression_error(node):
+                raise TypeMismatchInExpression(node)
+            raise TypeMismatchInStatement(ctx["stmt_node"] or node)
         raise TypeMismatchInExpression(node)
+
+    def _ensure_no_uninferred_auto_in_scope(self, block_node, scope):
+        for symbol in scope.values():
+            if symbol["typ"] is None:
+                raise TypeCannotBeInferred(block_node)
+
+    def _is_identifier_or_funccall_or_structliteral(self, expr):
+        return isinstance(expr, (Identifier, FuncCall, StructLiteral))
+
+    def _visit_nested_stmt(self, stmt):
+        if isinstance(stmt, BlockStmt):
+            self.visit(stmt)
+            return
+
+        self._push_scope()
+        try:
+            self.visit(stmt)
+            self._ensure_no_uninferred_auto_in_scope(BlockStmt([stmt]), self.scopes[-1])
+        finally:
+            self._pop_scope()
+
+    def _ensure_for_clause_type(self, clause, for_node):
+        if isinstance(clause, VarDecl):
+            self.visit(clause)
+            symbol = self.scopes[-1][clause.name]
+            if symbol["typ"] != self.INT:
+                raise TypeMismatchInStatement(for_node)
+            return
+
+        expr = clause.expr if isinstance(clause, ExprStmt) else clause
+        if isinstance(expr, AssignExpr):
+            result_type = self._actual_type(
+                self.visit(
+                    expr,
+                    self._expr_context(assign_mode="stmt", stmt_node=for_node),
+                )
+            )
+        else:
+            result_type = self._actual_type(self.visit(expr))
+
+        if self._is_pending_struct_literal(result_type):
+            raise TypeMismatchInStatement(for_node)
+        if self._is_unknown(result_type):
+            self._bind_unknown(result_type, self.INT)
+            result_type = self.INT
+        if result_type != self.INT:
+            raise TypeMismatchInStatement(for_node)
+
+    def _prefer_assignment_expression_error(self, node):
+        if not isinstance(node.lhs, Identifier):
+            return False
+
+        symbol = self._lookup_var(node.lhs.name)
+        if symbol is None:
+            return False
+
+        decl = symbol["node"]
+        return isinstance(decl, VarDecl) and decl.var_type is None

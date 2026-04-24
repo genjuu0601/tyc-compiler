@@ -1,0 +1,26 @@
+.........................................................F
+=================================== FAILURES ===================================
+___________________________________ test_060 ___________________________________
+
+    def test_060():
+        source = """
+    int foo() {
+        auto a;
+        auto b;
+        {{{
+            b && a;
+        }}}
+        b = 2;
+        a = 2.2;
+    }
+    """
+>       assert Checker(source).check_from_source() == "TypeMismatchInExpression(AssignExpr(Identifier(a) = FloatLiteral(2.2)))"
+E       AssertionError: assert 'TypeCannotBe...entifier(a)))' == 'TypeMismatch...iteral(2.2)))'
+E         
+E         - TypeMismatchInExpression(AssignExpr(Identifier(a) = FloatLiteral(2.2)))
+E         + TypeCannotBeInferred(BinaryOp(Identifier(b), &&, Identifier(a)))
+
+test_checker.py:712: AssertionError
+=========================== short test summary info ============================
+FAILED test_checker.py::test_060 - AssertionError: assert 'TypeCannotBe...ent...
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!

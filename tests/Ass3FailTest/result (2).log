@@ -1,0 +1,22 @@
+.......................................................................................................................................................................................................................................F
+=================================== FAILURES ===================================
+___________________________________ test_234 ___________________________________
+
+    def test_234():
+        source = """
+    void main() {
+        auto a;
+        ++ a;
+        float b = a;
+    }
+    """
+>       assert Checker(source).check_from_source() == "TypeMismatchInStatement(VarDecl(FloatType(), b = Identifier(a)))"
+E       AssertionError: assert 'TypeMismatch...entifier(a)))' == 'TypeMismatch...entifier(a)))'
+E         
+E         - TypeMismatchInStatement(VarDecl(FloatType(), b = Identifier(a)))
+E         + TypeMismatchInExpression(PrefixOp(++Identifier(a)))
+
+test_checker.py:2585: AssertionError
+=========================== short test summary info ============================
+FAILED test_checker.py::test_234 - AssertionError: assert 'TypeMismatch...ent...
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!

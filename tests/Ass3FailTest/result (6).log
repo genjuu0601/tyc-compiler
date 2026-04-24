@@ -1,0 +1,22 @@
+.........................................................................................................................................................F
+=================================== FAILURES ===================================
+___________________________________ test_156 ___________________________________
+
+    def test_156():
+        source = """
+    void main(){
+        string b;
+        for (; ; b = "S") {}
+    }
+    """
+    
+>       assert Checker(source).check_from_source() == "TypeMismatchInStatement(ForStmt(for None; None; AssignExpr(Identifier(b) = StringLiteral('S')) do BlockStmt([])))"
+E       AssertionError: assert 'Static checking passed' == 'TypeMismatch...ockStmt([])))'
+E         
+E         - TypeMismatchInStatement(ForStmt(for None; None; AssignExpr(Identifier(b) = StringLiteral('S')) do BlockStmt([])))
+E         + Static checking passed
+
+test_checker.py:1702: AssertionError
+=========================== short test summary info ============================
+FAILED test_checker.py::test_156 - AssertionError: assert 'Static checking pa...
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!

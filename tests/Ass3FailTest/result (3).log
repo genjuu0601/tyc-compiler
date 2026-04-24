@@ -1,0 +1,21 @@
+................................................................................................................................................................................................................................F
+=================================== FAILURES ===================================
+___________________________________ test_227 ___________________________________
+
+    def test_227():
+        source = """
+    void main() {
+        auto b;
+        int c = b > 2;
+    }
+    """
+>       assert Checker(source).check_from_source() == "TypeCannotBeInferred(BinaryOp(Identifier(b), >, IntLiteral(2)))"
+E       AssertionError: assert 'Static checking passed' == 'TypeCannotBe...tLiteral(2)))'
+E         
+E         - TypeCannotBeInferred(BinaryOp(Identifier(b), >, IntLiteral(2)))
+E         + Static checking passed
+
+test_checker.py:2510: AssertionError
+=========================== short test summary info ============================
+FAILED test_checker.py::test_227 - AssertionError: assert 'Static checking pa...
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!

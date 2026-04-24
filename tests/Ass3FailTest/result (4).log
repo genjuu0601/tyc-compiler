@@ -1,0 +1,25 @@
+..................................................F
+=================================== FAILURES ===================================
+___________________________________ test_053 ___________________________________
+
+    def test_053():
+        source = """
+    void whileError() {
+        int x = 10;
+        string text = "hello";
+    
+        x = text;
+    }
+    """
+>       assert Checker(source).check_from_source() == "TypeMismatchInStatement(ExprStmt(AssignExpr(Identifier(x) = Identifier(text))))"
+E       AssertionError: assert 'TypeMismatch...ifier(text)))' == 'TypeMismatch...fier(text))))'
+E         
+E         - TypeMismatchInStatement(ExprStmt(AssignExpr(Identifier(x) = Identifier(text))))
+E         ?               ----------    ^^^^                                              -
+E         + TypeMismatchInExpression(AssignExpr(Identifier(x) = Identifier(text)))
+E         ?                   ^^^^^^
+
+test_checker.py:640: AssertionError
+=========================== short test summary info ============================
+FAILED test_checker.py::test_053 - AssertionError: assert 'TypeMismatch...ifi...
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
